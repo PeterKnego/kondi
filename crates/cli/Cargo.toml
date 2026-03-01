@@ -1,0 +1,19 @@
+[package]
+name = "kondi"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "kondi"
+path = "src/main.rs"
+
+[dependencies]
+kondi-core = { path = "../core" }
+tokio.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+reqwest.workspace = true

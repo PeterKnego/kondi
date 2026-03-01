@@ -1,0 +1,19 @@
+[package]
+name = "kondi-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rmcp.workspace = true
+rquickjs.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+schemars.workspace = true
+oxc.workspace = true
+http.workspace = true
+futures.workspace = true
