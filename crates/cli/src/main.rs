@@ -20,52 +20,97 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Add an MCP server
+    /// Add an MCP server to the proxy
+    ///
+    /// The transport is inferred automatically: URLs starting with http:// or https://
+    /// default to "http", everything else defaults to "stdio". Use --transport to override.
     ///
     /// Examples:
     ///   kondi add myserver https://api.example.com/mcp
+    ///   kondi add --transport sse myserver https://api.example.com/sse
     ///   kondi add --transport stdio github -- npx -y @modelcontextprotocol/server-github
+    ///   kondi add --auth "Bearer token123" myserver https://api.example.com/mcp
+    ///   kondi add -H "X-Api-Key: abc" myserver https://api.example.com/mcp
+    ///   kondi add -e API_KEY=secret myserver -- /usr/bin/myserver
     Add {
-        #[arg(short, long)]
+        /// Transport protocol: http, sse, or stdio (auto-detected if omitted)
+        #[arg(short, long, value_name = "TRANSPORT")]
         transport: Option<String>,
-        #[arg(short, long)]
+        /// Authorization header value, e.g. "Bearer <token>"
+        #[arg(short, long, value_name = "VALUE")]
         auth: Option<String>,
-        #[arg(short = 'H', long = "header")]
+        /// Extra HTTP headers in "Key: Value" format (repeatable)
+        #[arg(short = 'H', long = "header", value_name = "KEY:VALUE")]
         headers: Vec<String>,
-        #[arg(short, long = "env")]
+        /// Environment variables for stdio servers in "KEY=VALUE" format (repeatable)
+        #[arg(short, long = "env", value_name = "KEY=VALUE")]
         envs: Vec<String>,
-        /// Server name
+        /// Name to register the server under
         name: String,
-        /// URL (for http/sse) or command (for stdio)
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        /// URL for http/sse transports, or command + arguments for stdio
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "URL|CMD [ARGS]...")]
         args: Vec<String>,
     },
 
-    /// Remove an MCP server
+    /// Remove a configured MCP server
+    ///
+    /// Example:
+    ///   kondi remove myserver
     Remove {
+        /// Name of the server to remove
         name: String,
     },
 
-    /// List configured MCP servers
+    /// List all configured MCP servers
+    ///
+    /// Alias: kondi ls
+    ///
+    /// Example:
+    ///   kondi list
     #[command(alias = "ls")]
     List,
 
-    /// Import servers from Claude config (~/.claude.json)
+    /// Import MCP servers from an external config file
+    ///
+    /// Supported sources:
+    ///   claude  — imports from ~/.claude.json (Claude Desktop config)
+    ///
+    /// Example:
+    ///   kondi import claude
     Import {
-        #[arg(value_enum)]
+        /// Config source to import from
+        #[arg(value_enum, value_name = "SOURCE")]
         source: ImportSourceArg,
     },
 
-    /// Install kondid as a system service
+    /// Install kondid as a system service (launchd on macOS, systemd on Linux)
+    ///
+    /// The daemon will be configured to start automatically on login.
+    ///
+    /// Example:
+    ///   kondi install
     Install,
 
     /// Uninstall the kondid system service
+    ///
+    /// Stops and removes the daemon from the system service manager.
+    ///
+    /// Example:
+    ///   kondi uninstall
     Uninstall,
 
-    /// Start the daemon (if not already running)
+    /// Start the kondid daemon in the background
+    ///
+    /// If the daemon is already running this is a no-op. Other commands
+    /// (list, import, install, uninstall) start the daemon automatically
+    /// when needed.
+    ///
+    /// Example:
+    ///   kondi start
+    ///   kondi start --http 8080
     Start {
-        /// Run MCP server over HTTP on this port
-        #[arg(long)]
+        /// Also expose an HTTP MCP endpoint on this port
+        #[arg(long, value_name = "PORT")]
         http: Option<u16>,
     },
 }
