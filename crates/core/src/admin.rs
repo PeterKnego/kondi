@@ -10,8 +10,7 @@ pub enum AdminRequest {
     RemoveMcp { name: String },
     ListMcp,
     ImportConfig { source: AdminImportSource },
-    Install,
-    Uninstall,
+    Shutdown,
 }
 
 /// Import source for the admin API.

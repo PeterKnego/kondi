@@ -10,7 +10,7 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser)]
 #[command(
     name = "kondi",
-    about = "Kondi — MCP proxy CLI",
+    about = "Kondi — Code-mode MCP proxy.",
     version
 )]
 struct Cli {
@@ -83,36 +83,25 @@ enum Commands {
         source: ImportSourceArg,
     },
 
-    /// Install kondid as a system service (launchd on macOS, systemd on Linux)
-    ///
-    /// The daemon will be configured to start automatically on login.
-    ///
-    /// Example:
-    ///   kondi install
-    Install,
-
-    /// Uninstall the kondid system service
-    ///
-    /// Stops and removes the daemon from the system service manager.
-    ///
-    /// Example:
-    ///   kondi uninstall
-    Uninstall,
-
     /// Start the kondid daemon in the background
     ///
     /// If the daemon is already running this is a no-op. Other commands
-    /// (list, import, install, uninstall) start the daemon automatically
-    /// when needed.
+    /// (list, import) start the daemon automatically when needed.
     ///
     /// Example:
-    ///   kondi start
-    ///   kondi start --http 8080
-    Start {
+    ///   kondi mcp
+    ///   kondi mcp --http 8080
+    Mcp {
         /// Also expose an HTTP MCP endpoint on this port
         #[arg(long, value_name = "PORT")]
         http: Option<u16>,
     },
+
+    /// Stop the kondid daemon
+    ///
+    /// Example:
+    ///   kondi stop
+    Stop,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -173,26 +162,23 @@ async fn main() -> Result<()> {
             Ok(())
         }
 
-        Commands::Install => {
-            ensure_daemon_running(&admin_url).await?;
-            let client = reqwest::Client::new();
-            let resp = admin_call(&client, &admin_url, AdminRequest::Install, &token).await?;
-            println!("{}", resp.message);
-            Ok(())
-        }
-
-        Commands::Uninstall => {
-            ensure_daemon_running(&admin_url).await?;
-            let client = reqwest::Client::new();
-            let resp = admin_call(&client, &admin_url, AdminRequest::Uninstall, &token).await?;
-            println!("{}", resp.message);
-            Ok(())
-        }
-
-        Commands::Start { http } => {
+        Commands::Mcp { http } => {
             // Start kondid as a background process
             start_daemon(http)?;
             println!("daemon started");
+            Ok(())
+        }
+
+        Commands::Stop => {
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()?;
+            if client.get(format!("{admin_url}/health")).send().await.is_err() {
+                println!("daemon is not running");
+                return Ok(());
+            }
+            admin_call(&client, &admin_url, AdminRequest::Shutdown, &token).await?;
+            println!("daemon stopped");
             Ok(())
         }
     }
