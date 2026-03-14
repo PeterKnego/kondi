@@ -127,7 +127,7 @@ async fn daemon_stop() -> Result<String, String> {
 #[tauri::command]
 async fn daemon_restart() -> Result<String, String> {
     let _ = admin_post(serde_json::json!({"command": "shutdown"})).await;
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    wait_for_daemon_down().await.map_err(|e| e.to_string())?;
     spawn_kondid().map_err(|e| e.to_string())?;
     wait_for_daemon(10).await.map_err(|e| e.to_string())?;
     Ok("restarted".into())
@@ -142,23 +142,70 @@ async fn mcp_list() -> Result<serde_json::Value, String> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// Minimal view of the config file — only the fields the GUI needs.
+#[derive(serde::Deserialize, Default)]
+struct GuiConfig {
+    #[serde(default)]
+    admin: GuiAdminConfig,
+}
+
+#[derive(serde::Deserialize)]
+struct GuiAdminConfig {
+    #[serde(default = "default_admin_port")]
+    port: u16,
+    #[serde(default)]
+    token: Option<String>,
+}
+
+fn default_admin_port() -> u16 {
+    7337
+}
+
+impl Default for GuiAdminConfig {
+    fn default() -> Self {
+        Self { port: default_admin_port(), token: None }
+    }
+}
+
+fn load_gui_config() -> GuiConfig {
+    let path = std::env::var_os("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".config/kondi/config.toml"));
+    let Some(path) = path else { return GuiConfig::default() };
+    let contents = std::fs::read_to_string(&path).unwrap_or_default();
+    toml::from_str(&contents).unwrap_or_default()
+}
+
 fn admin_url() -> String {
-    // TODO: read port from config
-    "http://127.0.0.1:7337".to_string()
+    let cfg = load_gui_config();
+    format!("http://127.0.0.1:{}", cfg.admin.port)
 }
 
 async fn admin_post(body: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    let cfg = load_gui_config();
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .build()?;
-    let resp = client
-        .post(format!("{}/admin", admin_url()))
-        .json(&body)
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
+    let mut req = client
+        .post(format!("http://127.0.0.1:{}/admin", cfg.admin.port))
+        .json(&body);
+    if let Some(token) = cfg.admin.token {
+        req = req.header("Authorization", format!("Bearer {token}"));
+    }
+    let resp = req.send().await?.json::<serde_json::Value>().await?;
     Ok(resp)
+}
+
+async fn wait_for_daemon_down() -> anyhow::Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(300))
+        .build()?;
+    for _ in 0..30 {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        if client.get(format!("{}/health", admin_url())).send().await.is_err() {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("daemon did not stop in time")
 }
 
 fn spawn_kondid() -> anyhow::Result<()> {

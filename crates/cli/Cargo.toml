@@ -12,6 +12,9 @@ assert_cmd = "2"
 assert_fs = "1"
 predicates = "3"
 
+[target.'cfg(target_os = "windows")'.dependencies]
+winreg = "0.55"
+
 [dependencies]
 kondi-core = { path = "../core" }
 tokio.workspace = true

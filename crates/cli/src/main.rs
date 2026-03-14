@@ -115,7 +115,11 @@ enum DaemonCmd {
     /// Show daemon status
     Status,
     /// Restart the daemon (stop then start)
-    Restart,
+    Restart {
+        /// Also expose an HTTP MCP endpoint on this port
+        #[arg(long, value_name = "PORT")]
+        http: Option<u16>,
+    },
     /// Install kondid as a login item / system service
     Install,
     /// Remove the kondid login item / system service
@@ -196,7 +200,7 @@ async fn main() -> Result<()> {
             }
             DaemonCmd::Stop => cmd_daemon_stop(&admin_url, &token).await,
             DaemonCmd::Status => cmd_daemon_status(&admin_url, &token).await,
-            DaemonCmd::Restart => cmd_daemon_restart(&admin_url, &token).await,
+            DaemonCmd::Restart { http } => cmd_daemon_restart(&admin_url, &token, http).await,
             DaemonCmd::Install => cmd_daemon_install(),
             DaemonCmd::Uninstall => cmd_daemon_uninstall(),
         },
@@ -247,7 +251,7 @@ async fn cmd_daemon_status(admin_url: &str, token: &Option<String>) -> Result<()
     Ok(())
 }
 
-async fn cmd_daemon_restart(admin_url: &str, token: &Option<String>) -> Result<()> {
+async fn cmd_daemon_restart(admin_url: &str, token: &Option<String>, http: Option<u16>) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()?;
@@ -255,7 +259,7 @@ async fn cmd_daemon_restart(admin_url: &str, token: &Option<String>) -> Result<(
         admin_call(&client, admin_url, AdminRequest::Shutdown, token).await?;
         wait_for_daemon_down(admin_url).await?;
     }
-    start_daemon(None)?;
+    start_daemon(http)?;
     ensure_daemon_running(admin_url).await?;
     println!("daemon restarted");
     Ok(())
@@ -272,10 +276,19 @@ fn cmd_daemon_uninstall() -> Result<()> {
 
 // ── Platform autostart (Phase 4) ────────────────────────────────────────────
 
+/// Escape special XML characters in a string for safe embedding in plist/XML.
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 #[cfg(target_os = "macos")]
 mod platform {
     use std::path::Path;
     use anyhow::Result;
+    use crate::xml_escape;
 
     const LABEL: &str = "app.kondi.daemon";
     const PLIST_PATH: &str = "Library/LaunchAgents/app.kondi.daemon.plist";
@@ -285,6 +298,7 @@ mod platform {
         let plist_dir = format!("{home}/Library/LaunchAgents");
         std::fs::create_dir_all(&plist_dir)?;
         let plist_path = format!("{home}/{PLIST_PATH}");
+        let kondid_escaped = xml_escape(&kondid.display().to_string());
         let plist = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -292,15 +306,14 @@ mod platform {
 <plist version="1.0">
 <dict>
   <key>Label</key>             <string>{LABEL}</string>
-  <key>ProgramArguments</key>  <array><string>{kondid}</string></array>
+  <key>ProgramArguments</key>  <array><string>{kondid_escaped}</string></array>
   <key>RunAtLoad</key>         <true/>
   <key>KeepAlive</key>         <false/>
   <key>StandardOutPath</key>   <string>/tmp/kondid.log</string>
   <key>StandardErrorPath</key> <string>/tmp/kondid.err</string>
 </dict>
 </plist>
-"#,
-            kondid = kondid.display()
+"#
         );
         std::fs::write(&plist_path, plist)?;
         std::process::Command::new("launchctl")
@@ -336,15 +349,19 @@ mod platform {
     const SERVICE_FILE: &str = ".config/systemd/user/kondid.service";
 
     pub fn install_service(kondid: &Path) -> Result<()> {
+        let kondid_str = kondid.display().to_string();
+        anyhow::ensure!(
+            !kondid_str.contains('\n'),
+            "kondid path contains a newline — installation aborted"
+        );
         let home = std::env::var("HOME").context("HOME not set")?;
         let service_dir = format!("{home}/.config/systemd/user");
         std::fs::create_dir_all(&service_dir)?;
         let service_path = format!("{home}/{SERVICE_FILE}");
         let unit = format!(
             "[Unit]\nDescription=Kondi MCP daemon\nAfter=network.target\n\n\
-             [Service]\nExecStart={kondid}\nRestart=on-failure\nRestartSec=5\n\n\
-             [Install]\nWantedBy=default.target\n",
-            kondid = kondid.display()
+             [Service]\nExecStart={kondid_str}\nRestart=on-failure\nRestartSec=5\n\n\
+             [Install]\nWantedBy=default.target\n"
         );
         std::fs::write(&service_path, unit)?;
         std::process::Command::new("systemctl")

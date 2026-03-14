@@ -27,12 +27,62 @@ struct PidGuard {
 
 impl PidGuard {
     fn write(path: std::path::PathBuf) -> Result<Self> {
+        use std::io::Write as _;
+
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&path, std::process::id().to_string())?;
-        Ok(Self { path })
+
+        loop {
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut f) => {
+                    write!(f, "{}", std::process::id())?;
+                    return Ok(Self { path });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // PID file exists — check if it belongs to a live process
+                    let stale = std::fs::read_to_string(&path)
+                        .ok()
+                        .and_then(|s| s.trim().parse::<u32>().ok())
+                        .map(|pid| !pid_is_alive(pid))
+                        .unwrap_or(true); // unreadable / unparseable → treat as stale
+
+                    if stale {
+                        std::fs::remove_file(&path)?;
+                        // Loop and retry the exclusive create
+                    } else {
+                        anyhow::bail!(
+                            "another kondid is already running; if not, remove {}",
+                            path.display()
+                        );
+                    }
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn pid_is_alive(pid: u32) -> bool {
+    std::path::Path::new(&format!("/proc/{pid}")).exists()
+}
+
+#[cfg(target_os = "macos")]
+fn pid_is_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn pid_is_alive(_pid: u32) -> bool {
+    // Conservative: assume alive; stale PID files need manual removal on this platform
+    true
 }
 
 impl Drop for PidGuard {
