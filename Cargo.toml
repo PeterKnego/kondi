@@ -5,6 +5,9 @@ members = [
     "crates/mcp-server",
     "crates/cli",
 ]
+exclude = [
+    "crates/gui/src-tauri",
+]
 resolver = "2"
 
 [workspace.package]
