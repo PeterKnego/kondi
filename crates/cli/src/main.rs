@@ -10,7 +10,7 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser)]
 #[command(
     name = "kondi",
-    about = "Kondi — Code-mode MCP proxy.",
+    about = "Kondi — MCP proxy CLI",
     version
 )]
 struct Cli {
@@ -83,25 +83,43 @@ enum Commands {
         source: ImportSourceArg,
     },
 
-    /// Start the kondid daemon in the background
-    ///
-    /// If the daemon is already running this is a no-op. Other commands
-    /// (list, import) start the daemon automatically when needed.
-    ///
-    /// Example:
-    ///   kondi mcp
-    ///   kondi mcp --http 8080
+    /// Manage the kondid daemon
+    Daemon {
+        #[command(subcommand)]
+        cmd: DaemonCmd,
+    },
+
+    /// Start the kondid daemon in the background (alias for 'daemon start')
+    #[command(hide = true)]
     Mcp {
         /// Also expose an HTTP MCP endpoint on this port
         #[arg(long, value_name = "PORT")]
         http: Option<u16>,
     },
 
-    /// Stop the kondid daemon
-    ///
-    /// Example:
-    ///   kondi stop
+    /// Stop the kondid daemon (alias for 'daemon stop')
+    #[command(hide = true)]
     Stop,
+}
+
+#[derive(Subcommand)]
+enum DaemonCmd {
+    /// Start the kondid daemon in the background
+    Start {
+        /// Also expose an HTTP MCP endpoint on this port
+        #[arg(long, value_name = "PORT")]
+        http: Option<u16>,
+    },
+    /// Stop the kondid daemon
+    Stop,
+    /// Show daemon status
+    Status,
+    /// Restart the daemon (stop then start)
+    Restart,
+    /// Install kondid as a login item / system service
+    Install,
+    /// Remove the kondid login item / system service
+    Uninstall,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -133,12 +151,10 @@ async fn main() -> Result<()> {
             let client = reqwest::Client::new();
             let resp = admin_call(&client, &admin_url, AdminRequest::ListMcp, &token).await?;
             println!("{}", resp.message);
-            if let Some(data) = resp.data {
-                if let Some(servers) = data.as_array() {
-                    for s in servers {
-                        if let Some(name) = s.get("name").and_then(|v| v.as_str()) {
-                            println!("  {name}");
-                        }
+            if let Some(servers) = resp.data.as_ref().and_then(|d| d.as_array()) {
+                for s in servers {
+                    if let Some(name) = s.get("name").and_then(|v| v.as_str()) {
+                        println!("  {name}");
                     }
                 }
             }
@@ -162,27 +178,245 @@ async fn main() -> Result<()> {
             Ok(())
         }
 
+        // Hidden alias: kondi mcp
         Commands::Mcp { http } => {
-            // Start kondid as a background process
             start_daemon(http)?;
             println!("daemon started");
             Ok(())
         }
 
-        Commands::Stop => {
-            let client = reqwest::Client::builder()
-                .timeout(Duration::from_secs(2))
-                .build()?;
-            if client.get(format!("{admin_url}/health")).send().await.is_err() {
-                println!("daemon is not running");
-                return Ok(());
+        // Hidden alias: kondi stop
+        Commands::Stop => cmd_daemon_stop(&admin_url, &token).await,
+
+        Commands::Daemon { cmd } => match cmd {
+            DaemonCmd::Start { http } => {
+                start_daemon(http)?;
+                println!("daemon started");
+                Ok(())
             }
-            admin_call(&client, &admin_url, AdminRequest::Shutdown, &token).await?;
-            println!("daemon stopped");
-            Ok(())
-        }
+            DaemonCmd::Stop => cmd_daemon_stop(&admin_url, &token).await,
+            DaemonCmd::Status => cmd_daemon_status(&admin_url, &token).await,
+            DaemonCmd::Restart => cmd_daemon_restart(&admin_url, &token).await,
+            DaemonCmd::Install => cmd_daemon_install(),
+            DaemonCmd::Uninstall => cmd_daemon_uninstall(),
+        },
     }
 }
+
+// ── Daemon commands ─────────────────────────────────────────────────────────
+
+async fn cmd_daemon_stop(admin_url: &str, token: &Option<String>) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()?;
+    if client.get(format!("{admin_url}/health")).send().await.is_err() {
+        println!("daemon is not running");
+        return Ok(());
+    }
+    admin_call(&client, admin_url, AdminRequest::Shutdown, token).await?;
+    println!("daemon stopped");
+    Ok(())
+}
+
+async fn cmd_daemon_status(admin_url: &str, token: &Option<String>) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()?;
+    if client.get(format!("{admin_url}/health")).send().await.is_err() {
+        println!("kondid is not running");
+        return Ok(());
+    }
+    let resp = admin_call(&client, admin_url, AdminRequest::Status, token).await?;
+    println!("kondid is running");
+    if let Some(data) = resp.data {
+        if let Some(pid) = data.get("pid").and_then(|v| v.as_u64()) {
+            println!("  PID:      {pid}");
+        }
+        if let Some(uptime) = data.get("uptime_secs").and_then(|v| v.as_u64()) {
+            let mins = uptime / 60;
+            let secs = uptime % 60;
+            println!("  Uptime:   {mins}m {secs}s");
+        }
+        if let Some(version) = data.get("version").and_then(|v| v.as_str()) {
+            println!("  Version:  {version}");
+        }
+        if let Some(count) = data.get("server_count").and_then(|v| v.as_u64()) {
+            println!("  Servers:  {count} connected");
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_daemon_restart(admin_url: &str, token: &Option<String>) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()?;
+    if client.get(format!("{admin_url}/health")).send().await.is_ok() {
+        admin_call(&client, admin_url, AdminRequest::Shutdown, token).await?;
+        wait_for_daemon_down(admin_url).await?;
+    }
+    start_daemon(None)?;
+    ensure_daemon_running(admin_url).await?;
+    println!("daemon restarted");
+    Ok(())
+}
+
+fn cmd_daemon_install() -> Result<()> {
+    let kondid = find_kondid();
+    platform::install_service(&kondid)
+}
+
+fn cmd_daemon_uninstall() -> Result<()> {
+    platform::uninstall_service()
+}
+
+// ── Platform autostart (Phase 4) ────────────────────────────────────────────
+
+#[cfg(target_os = "macos")]
+mod platform {
+    use std::path::Path;
+    use anyhow::Result;
+
+    const LABEL: &str = "app.kondi.daemon";
+    const PLIST_PATH: &str = "Library/LaunchAgents/app.kondi.daemon.plist";
+
+    pub fn install_service(kondid: &Path) -> Result<()> {
+        let home = std::env::var("HOME").context("HOME not set")?;
+        let plist_dir = format!("{home}/Library/LaunchAgents");
+        std::fs::create_dir_all(&plist_dir)?;
+        let plist_path = format!("{home}/{PLIST_PATH}");
+        let plist = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>             <string>{LABEL}</string>
+  <key>ProgramArguments</key>  <array><string>{kondid}</string></array>
+  <key>RunAtLoad</key>         <true/>
+  <key>KeepAlive</key>         <false/>
+  <key>StandardOutPath</key>   <string>/tmp/kondid.log</string>
+  <key>StandardErrorPath</key> <string>/tmp/kondid.err</string>
+</dict>
+</plist>
+"#,
+            kondid = kondid.display()
+        );
+        std::fs::write(&plist_path, plist)?;
+        std::process::Command::new("launchctl")
+            .args(["load", "-w", &plist_path])
+            .status()?;
+        println!("kondid installed as LaunchAgent: {plist_path}");
+        Ok(())
+    }
+
+    pub fn uninstall_service() -> Result<()> {
+        let home = std::env::var("HOME").context("HOME not set")?;
+        let plist_path = format!("{home}/{PLIST_PATH}");
+        if std::path::Path::new(&plist_path).exists() {
+            std::process::Command::new("launchctl")
+                .args(["unload", "-w", &plist_path])
+                .status()?;
+            std::fs::remove_file(&plist_path)?;
+            println!("kondid LaunchAgent removed");
+        } else {
+            println!("kondid is not installed as a LaunchAgent");
+        }
+        Ok(())
+    }
+
+    use anyhow::Context as _;
+}
+
+#[cfg(target_os = "linux")]
+mod platform {
+    use std::path::Path;
+    use anyhow::{Context as _, Result};
+
+    const SERVICE_FILE: &str = ".config/systemd/user/kondid.service";
+
+    pub fn install_service(kondid: &Path) -> Result<()> {
+        let home = std::env::var("HOME").context("HOME not set")?;
+        let service_dir = format!("{home}/.config/systemd/user");
+        std::fs::create_dir_all(&service_dir)?;
+        let service_path = format!("{home}/{SERVICE_FILE}");
+        let unit = format!(
+            "[Unit]\nDescription=Kondi MCP daemon\nAfter=network.target\n\n\
+             [Service]\nExecStart={kondid}\nRestart=on-failure\nRestartSec=5\n\n\
+             [Install]\nWantedBy=default.target\n",
+            kondid = kondid.display()
+        );
+        std::fs::write(&service_path, unit)?;
+        std::process::Command::new("systemctl")
+            .args(["--user", "enable", "--now", "kondid"])
+            .status()?;
+        println!("kondid installed as systemd user service: {service_path}");
+        Ok(())
+    }
+
+    pub fn uninstall_service() -> Result<()> {
+        let home = std::env::var("HOME").context("HOME not set")?;
+        let service_path = format!("{home}/{SERVICE_FILE}");
+        if std::path::Path::new(&service_path).exists() {
+            std::process::Command::new("systemctl")
+                .args(["--user", "disable", "--now", "kondid"])
+                .status()?;
+            std::fs::remove_file(&service_path)?;
+            println!("kondid systemd service removed");
+        } else {
+            println!("kondid is not installed as a systemd service");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod platform {
+    use std::path::Path;
+    use anyhow::{Context as _, Result};
+
+    pub fn install_service(kondid: &Path) -> Result<()> {
+        use winreg::RegKey;
+        use winreg::enums::*;
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let run_key = hkcu.open_subkey_with_flags(
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            KEY_SET_VALUE,
+        ).context("failed to open registry Run key")?;
+        run_key.set_value("Kondi", &kondid.to_string_lossy().as_ref())?;
+        println!("kondid registered in Windows startup registry");
+        Ok(())
+    }
+
+    pub fn uninstall_service() -> Result<()> {
+        use winreg::RegKey;
+        use winreg::enums::*;
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let run_key = hkcu.open_subkey_with_flags(
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            KEY_SET_VALUE,
+        ).context("failed to open registry Run key")?;
+        let _ = run_key.delete_value("Kondi");
+        println!("kondid removed from Windows startup registry");
+        Ok(())
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+mod platform {
+    use std::path::Path;
+    use anyhow::Result;
+
+    pub fn install_service(_kondid: &Path) -> Result<()> {
+        anyhow::bail!("daemon install is not supported on this platform")
+    }
+
+    pub fn uninstall_service() -> Result<()> {
+        anyhow::bail!("daemon uninstall is not supported on this platform")
+    }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Add a server directly by modifying config (no daemon needed).
 fn cmd_add_direct(
@@ -309,12 +543,43 @@ async fn ensure_daemon_running(admin_url: &str) -> Result<()> {
     anyhow::bail!("kondid did not start in time — run `kondid` manually")
 }
 
+/// Poll until the daemon's health endpoint stops responding.
+async fn wait_for_daemon_down(admin_url: &str) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(300))
+        .build()?;
+    for _ in 0..30 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        if client.get(format!("{admin_url}/health")).send().await.is_err() {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("daemon did not stop in time")
+}
+
+/// Find the `kondid` binary: prefer the sibling of the running executable.
+fn find_kondid() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        let sibling = exe.with_file_name("kondid");
+        if sibling.exists() {
+            return sibling;
+        }
+        let sibling_exe = exe.with_file_name("kondid.exe");
+        if sibling_exe.exists() {
+            return sibling_exe;
+        }
+    }
+    std::path::PathBuf::from("kondid")
+}
+
 fn start_daemon(http: Option<u16>) -> Result<()> {
-    let mut cmd = std::process::Command::new("kondid");
+    let kondid = find_kondid();
+    let mut cmd = std::process::Command::new(&kondid);
     if let Some(port) = http {
         cmd.arg("--http").arg(port.to_string());
     }
-    cmd.spawn().context("failed to spawn kondid — ensure it is in $PATH")?;
+    cmd.spawn()
+        .with_context(|| format!("failed to spawn {} — ensure kondid is in $PATH or next to kondi", kondid.display()))?;
     Ok(())
 }
 

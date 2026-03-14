@@ -11,6 +11,8 @@ pub enum AdminRequest {
     ListMcp,
     ImportConfig { source: AdminImportSource },
     Shutdown,
+    /// Returns daemon status: pid, uptime_secs, version, server_count.
+    Status,
 }
 
 /// Import source for the admin API.

@@ -120,6 +120,21 @@ pub fn default_config_path() -> Result<PathBuf> {
     Ok(config_dir.join("kondi").join("config.toml"))
 }
 
+/// Path to the PID file: same dir as config, named `kondid.pid`.
+pub fn pid_path() -> Result<PathBuf> {
+    let config_dir = config_dir().context("could not determine config directory")?;
+    Ok(config_dir.join("kondi").join("kondid.pid"))
+}
+
+/// Path to the runtime directory for lock files / sockets.
+/// Uses the same dir as config for simplicity.
+pub fn runtime_dir() -> Result<PathBuf> {
+    let config_dir = config_dir().context("could not determine config directory")?;
+    let dir = config_dir.join("kondi");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
 fn config_dir() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {

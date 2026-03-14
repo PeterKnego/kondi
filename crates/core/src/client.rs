@@ -143,7 +143,7 @@ impl ClientPool {
             .await;
 
         match result {
-            Ok(r) => return Ok(r),
+            Ok(r) => Ok(r),
             Err(first_err) => {
                 tracing::warn!(
                     server = %server_name,

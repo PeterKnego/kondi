@@ -1295,6 +1295,7 @@ dependencies = [
  "kondi-core",
  "rmcp",
  "schemars",
+ "scopeguard",
  "serde",
  "serde_json",
  "tokio",

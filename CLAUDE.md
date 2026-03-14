@@ -49,3 +49,26 @@ The CLI communicates with the daemon via a JSON-over-HTTP admin API (`POST /admi
 | `search` | BM25 keyword search over all tools in the catalog |
 | `search_code` | Run TypeScript against the `tools` array to filter/explore |
 | `execute` | Run TypeScript that calls tools across any connected server |
+
+## GUI development
+
+```bash
+make gui-setup    # install frontend dependencies (first time)
+make gui-dev      # tauri dev server with hot-reload
+make gui-build    # production bundle
+```
+
+The GUI lives in `crates/gui/` — a Tauri v2 app that is **not** part of the Cargo workspace (Tauri manages its own build). It communicates with `kondid` via the same HTTP admin API.
+
+## Daemon lifecycle
+
+```bash
+kondi daemon install    # register kondid as a login item
+kondi daemon start      # start daemon now
+kondi daemon status     # check if running
+kondi daemon stop       # stop daemon
+kondi daemon restart    # stop then start
+kondi daemon uninstall  # remove login item
+```
+
+Legacy aliases: `kondi mcp` (= `daemon start`) and `kondi stop` (= `daemon stop`) are kept for backwards compatibility.
