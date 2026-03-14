@@ -147,3 +147,71 @@ fn add_unknown_transport_fails() {
         .failure()
         .stderr(predicate::str::contains("unknown transport"));
 }
+
+#[test]
+fn daemon_subcommand_help() {
+    let tmp = TempDir::new().unwrap();
+    kondi(&tmp)
+        .args(["daemon", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("start"))
+        .stdout(predicate::str::contains("stop"))
+        .stdout(predicate::str::contains("status"))
+        .stdout(predicate::str::contains("restart"));
+}
+
+#[test]
+fn daemon_status_not_running() {
+    // With no daemon running (and no chance of one on a random port), status
+    // should print "not running". We use a port unlikely to be in use.
+    let tmp = TempDir::new().unwrap();
+    // Write a config pointing to a free port so we don't hit a real daemon.
+    let cfg_dir = tmp.path().join(".config/kondi");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(
+        cfg_dir.join("config.toml"),
+        "[admin]\nport = 19337\n",
+    )
+    .unwrap();
+    kondi(&tmp)
+        .args(["daemon", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not running"));
+}
+
+#[test]
+fn daemon_stop_not_running() {
+    let tmp = TempDir::new().unwrap();
+    let cfg_dir = tmp.path().join(".config/kondi");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(
+        cfg_dir.join("config.toml"),
+        "[admin]\nport = 19338\n",
+    )
+    .unwrap();
+    kondi(&tmp)
+        .args(["daemon", "stop"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not running"));
+}
+
+/// Hidden alias `kondi stop` must still work.
+#[test]
+fn stop_alias_not_running() {
+    let tmp = TempDir::new().unwrap();
+    let cfg_dir = tmp.path().join(".config/kondi");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(
+        cfg_dir.join("config.toml"),
+        "[admin]\nport = 19339\n",
+    )
+    .unwrap();
+    kondi(&tmp)
+        .args(["stop"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not running"));
+}

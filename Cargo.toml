@@ -1,8 +1,12 @@
 [workspace]
+# crates/gui is a Tauri app managed separately — see crates/gui/README.md
 members = [
     "crates/core",
     "crates/mcp-server",
     "crates/cli",
+]
+exclude = [
+    "crates/gui/src-tauri",
 ]
 resolver = "2"
 
@@ -12,6 +16,7 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
+scopeguard = { version = "1" }
 rmcp = { version = "0.16", features = [
     "client",
     "server",

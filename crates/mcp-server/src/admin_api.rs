@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -12,6 +13,7 @@ use kondi_core::import;
 use kondi_core::sandbox::Sandbox;
 use serde_json::json;
 use tokio::sync::Mutex;
+use tokio::sync::watch;
 use tracing::info;
 
 use crate::server::ServerState;
@@ -19,14 +21,18 @@ use crate::server::ServerState;
 struct AdminState {
     state: Arc<Mutex<ServerState>>,
     token: Option<String>,
+    started_at: Instant,
+    shutdown_tx: watch::Sender<bool>,
 }
 
 pub async fn start_admin_server(
     port: u16,
     token: Option<String>,
     state: Arc<Mutex<ServerState>>,
+    started_at: Instant,
+    shutdown_tx: watch::Sender<bool>,
 ) -> anyhow::Result<()> {
-    let admin_state = Arc::new(AdminState { state, token });
+    let admin_state = Arc::new(AdminState { state, token, started_at, shutdown_tx });
 
     let app = Router::new()
         .route("/admin", routing::post(handle_admin))
@@ -66,15 +72,36 @@ async fn handle_admin(
         }
     }
 
-    let response = dispatch_request(req, &admin.state).await;
+    let response = dispatch_request(req, &admin).await;
     (StatusCode::OK, Json(response))
 }
 
-async fn dispatch_request(req: AdminRequest, state: &Arc<Mutex<ServerState>>) -> AdminResponse {
+async fn dispatch_request(req: AdminRequest, admin: &AdminState) -> AdminResponse {
+    let state = &admin.state;
     match req {
+        AdminRequest::Status => {
+            let s = state.lock().await;
+            let server_count = s
+                .catalog
+                .entries()
+                .iter()
+                .map(|e| e.server.as_str())
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+            AdminResponse::ok_with_data(
+                "daemon running".to_string(),
+                json!({
+                    "pid": std::process::id(),
+                    "uptime_secs": admin.started_at.elapsed().as_secs(),
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "server_count": server_count,
+                }),
+            )
+        }
+
         AdminRequest::ListMcp => {
-            let state = state.lock().await;
-            let servers: Vec<serde_json::Value> = state
+            let s = state.lock().await;
+            let servers: Vec<serde_json::Value> = s
                 .catalog
                 .entries()
                 .iter()
@@ -90,7 +117,6 @@ async fn dispatch_request(req: AdminRequest, state: &Arc<Mutex<ServerState>>) ->
         }
 
         AdminRequest::AddMcp { name, config } => {
-            // Load current config, add server, save, reconnect
             let result: anyhow::Result<AdminResponse> = async {
                 let mut cfg = Config::load()?;
                 cfg.add_server(name.clone(), config);
@@ -171,12 +197,8 @@ async fn dispatch_request(req: AdminRequest, state: &Arc<Mutex<ServerState>>) ->
         }
 
         AdminRequest::Shutdown => {
-            tokio::spawn(async {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                std::process::exit(0);
-            });
+            let _ = admin.shutdown_tx.send(true);
             AdminResponse::ok("daemon shutting down")
         }
     }
 }
-
