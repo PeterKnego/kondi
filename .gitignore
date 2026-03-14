@@ -4,3 +4,4 @@
 *.iml
 
 .claude/settings.local.json
+.worktrees/
