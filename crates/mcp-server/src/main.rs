@@ -157,3 +157,50 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pid_guard_creates_file_with_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.pid");
+        let _guard = PidGuard::write(path.clone()).unwrap();
+        assert!(path.exists());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, std::process::id().to_string());
+    }
+
+    #[test]
+    fn pid_guard_removes_file_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("drop.pid");
+        {
+            let _guard = PidGuard::write(path.clone()).unwrap();
+            assert!(path.exists());
+        }
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn pid_guard_replaces_stale_pid_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stale.pid");
+        // PID 99999999 is extremely unlikely to be alive
+        std::fs::write(&path, "99999999").unwrap();
+        let _guard = PidGuard::write(path.clone()).unwrap();
+        assert!(path.exists());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, std::process::id().to_string());
+    }
+
+    #[test]
+    fn pid_guard_errors_when_process_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("live.pid");
+        // Write the current process's PID — it is definitely alive
+        std::fs::write(&path, std::process::id().to_string()).unwrap();
+        assert!(PidGuard::write(path).is_err());
+    }
+}

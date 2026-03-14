@@ -260,11 +260,20 @@ async fn cmd_daemon_restart(app: AppHandle) {
     update_tray_status(&app).await;
 }
 
-/// Update the tray icon tooltip to reflect current daemon state.
+/// Update the tray icon and tooltip to reflect current daemon state.
 async fn update_tray_status(app: &AppHandle) {
     let running = reqwest::get(format!("{}/health", admin_url())).await.is_ok();
     if let Some(tray) = app.tray_by_id("main") {
         let tooltip = if running { "Kondi — running" } else { "Kondi — stopped" };
         let _ = tray.set_tooltip(Some(tooltip));
+
+        let icon_bytes: &[u8] = if running {
+            include_bytes!("../icons/tray-running.png")
+        } else {
+            include_bytes!("../icons/tray-stopped.png")
+        };
+        if let Ok(image) = tauri::image::Image::from_bytes(icon_bytes) {
+            let _ = tray.set_icon(Some(image));
+        }
     }
 }

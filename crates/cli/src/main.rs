@@ -287,19 +287,15 @@ fn xml_escape(s: &str) -> String {
 #[cfg(target_os = "macos")]
 mod platform {
     use std::path::Path;
-    use anyhow::Result;
+    use anyhow::{Context as _, Result};
     use crate::xml_escape;
 
     const LABEL: &str = "app.kondi.daemon";
-    const PLIST_PATH: &str = "Library/LaunchAgents/app.kondi.daemon.plist";
+    pub(crate) const PLIST_PATH: &str = "Library/LaunchAgents/app.kondi.daemon.plist";
 
-    pub fn install_service(kondid: &Path) -> Result<()> {
-        let home = std::env::var("HOME").context("HOME not set")?;
-        let plist_dir = format!("{home}/Library/LaunchAgents");
-        std::fs::create_dir_all(&plist_dir)?;
-        let plist_path = format!("{home}/{PLIST_PATH}");
+    pub(crate) fn plist_content(kondid: &Path) -> String {
         let kondid_escaped = xml_escape(&kondid.display().to_string());
-        let plist = format!(
+        format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -314,8 +310,15 @@ mod platform {
 </dict>
 </plist>
 "#
-        );
-        std::fs::write(&plist_path, plist)?;
+        )
+    }
+
+    pub fn install_service(kondid: &Path) -> Result<()> {
+        let home = std::env::var("HOME").context("HOME not set")?;
+        let plist_dir = format!("{home}/Library/LaunchAgents");
+        std::fs::create_dir_all(&plist_dir)?;
+        let plist_path = format!("{home}/{PLIST_PATH}");
+        std::fs::write(&plist_path, plist_content(kondid))?;
         std::process::Command::new("launchctl")
             .args(["load", "-w", &plist_path])
             .status()?;
@@ -337,8 +340,6 @@ mod platform {
         }
         Ok(())
     }
-
-    use anyhow::Context as _;
 }
 
 #[cfg(target_os = "linux")]
@@ -346,24 +347,27 @@ mod platform {
     use std::path::Path;
     use anyhow::{Context as _, Result};
 
-    const SERVICE_FILE: &str = ".config/systemd/user/kondid.service";
+    pub(crate) const SERVICE_FILE: &str = ".config/systemd/user/kondid.service";
 
-    pub fn install_service(kondid: &Path) -> Result<()> {
+    pub(crate) fn service_content(kondid: &Path) -> Result<String> {
         let kondid_str = kondid.display().to_string();
         anyhow::ensure!(
             !kondid_str.contains('\n'),
             "kondid path contains a newline — installation aborted"
         );
+        Ok(format!(
+            "[Unit]\nDescription=Kondi MCP daemon\nAfter=network.target\n\n\
+             [Service]\nExecStart={kondid_str}\nRestart=on-failure\nRestartSec=5\n\n\
+             [Install]\nWantedBy=default.target\n"
+        ))
+    }
+
+    pub fn install_service(kondid: &Path) -> Result<()> {
         let home = std::env::var("HOME").context("HOME not set")?;
         let service_dir = format!("{home}/.config/systemd/user");
         std::fs::create_dir_all(&service_dir)?;
         let service_path = format!("{home}/{SERVICE_FILE}");
-        let unit = format!(
-            "[Unit]\nDescription=Kondi MCP daemon\nAfter=network.target\n\n\
-             [Service]\nExecStart={kondid_str}\nRestart=on-failure\nRestartSec=5\n\n\
-             [Install]\nWantedBy=default.target\n"
-        );
-        std::fs::write(&service_path, unit)?;
+        std::fs::write(&service_path, service_content(kondid)?)?;
         std::process::Command::new("systemctl")
             .args(["--user", "enable", "--now", "kondid"])
             .status()?;
@@ -622,4 +626,84 @@ async fn admin_call(
         .context("failed to parse admin response")?;
 
     Ok(resp)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn xml_escape_special_chars() {
+        assert_eq!(super::xml_escape("a&b"), "a&amp;b");
+        assert_eq!(super::xml_escape("<tag>"), "&lt;tag&gt;");
+        assert_eq!(super::xml_escape("\"val\""), "&quot;val&quot;");
+        assert_eq!(super::xml_escape("/usr/bin/kondid"), "/usr/bin/kondid");
+    }
+
+    #[cfg(target_os = "macos")]
+    mod macos {
+        use std::path::Path;
+        use crate::platform;
+
+        #[test]
+        fn plist_contains_label() {
+            let content = platform::plist_content(Path::new("/usr/local/bin/kondid"));
+            assert!(content.contains("app.kondi.daemon"));
+        }
+
+        #[test]
+        fn plist_contains_kondid_path() {
+            let content = platform::plist_content(Path::new("/usr/local/bin/kondid"));
+            assert!(content.contains("/usr/local/bin/kondid"));
+        }
+
+        #[test]
+        fn plist_escapes_xml_in_path() {
+            let content = platform::plist_content(Path::new("/path/with<special>&chars/kondid"));
+            assert!(content.contains("&lt;special&gt;"));
+            assert!(content.contains("&amp;chars"));
+            assert!(!content.contains("<special>"));
+        }
+
+        #[test]
+        fn plist_has_run_at_load_true() {
+            let content = platform::plist_content(Path::new("/usr/bin/kondid"));
+            assert!(content.contains("<key>RunAtLoad</key>"));
+            assert!(content.contains("<true/>"));
+        }
+
+        #[test]
+        fn plist_path_constant() {
+            assert!(platform::PLIST_PATH.ends_with("app.kondi.daemon.plist"));
+            assert!(platform::PLIST_PATH.starts_with("Library/LaunchAgents/"));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    mod linux {
+        use std::path::Path;
+        use crate::platform;
+
+        #[test]
+        fn service_content_contains_exec_start() {
+            let content = platform::service_content(Path::new("/usr/local/bin/kondid")).unwrap();
+            assert!(content.contains("ExecStart=/usr/local/bin/kondid"));
+        }
+
+        #[test]
+        fn service_content_has_restart_policy() {
+            let content = platform::service_content(Path::new("/usr/bin/kondid")).unwrap();
+            assert!(content.contains("Restart=on-failure"));
+        }
+
+        #[test]
+        fn service_content_rejects_newline_in_path() {
+            let result = platform::service_content(Path::new("/bad\npath/kondid"));
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn service_file_path_constant() {
+            assert!(platform::SERVICE_FILE.ends_with("kondid.service"));
+            assert!(platform::SERVICE_FILE.contains("systemd/user/"));
+        }
+    }
 }
