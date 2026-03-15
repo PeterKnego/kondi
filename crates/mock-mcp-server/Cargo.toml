@@ -1,0 +1,17 @@
+[package]
+name = "mock-mcp-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mock-mcp-server"
+path = "src/main.rs"
+
+[dependencies]
+rmcp.workspace = true
+tokio.workspace = true
+clap.workspace = true
+serde.workspace = true
+schemars.workspace = true
+anyhow.workspace = true

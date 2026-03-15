@@ -1399,6 +1399,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mock-mcp-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rmcp",
+ "schemars",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "native-tls"
 version = "0.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"

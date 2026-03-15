@@ -4,6 +4,7 @@ members = [
     "crates/core",
     "crates/mcp-server",
     "crates/cli",
+    "crates/mock-mcp-server",
 ]
 exclude = [
     "crates/gui/src-tauri",
